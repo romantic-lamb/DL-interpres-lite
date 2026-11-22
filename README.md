@@ -18,7 +18,9 @@
 https://github.com/romantic-lamb/DL-interpres-lite/blob/main/DL-interpres-lite.js
 ```
 
-새 버전이 나오면 같은 주소로 다시 설치하면 됩니다. 저장해 둔 용어집과 말투 카드는 그대로 남습니다.
+**업데이트는 자동입니다.** 설치하는 `DL-interpres-lite.js`는 껍데기이고, 드림랜드를 켤 때마다 GitHub에서 최신 본체(`core.js`)를 받아 실행합니다.
+GitHub에 닿지 않으면 마지막으로 받아 둔 본체를 쓰고, 새 본체가 실행되지 않으면 이전 본체로 돌아갑니다.
+GitHub 원본 파일 서버가 몇 분 정도 캐시할 수 있어서, 올린 직후에는 반영이 조금 늦을 수 있습니다.
 
 ## 쓰는 법
 
