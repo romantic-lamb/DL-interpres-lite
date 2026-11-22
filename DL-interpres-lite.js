@@ -12,7 +12,7 @@
 export const manifest = {
   id: 'dl-interpres-lite',
   name: '이야기 통역사 라이트',
-  version: '0.1.0',
+  version: '0.2.0',
   author: 'romantic-lamb',
   description: '채팅마다 고유명사 번역 · 캐릭터 말투 · 독자 지시문을 고정해, 기본 번역 지시문에 자동으로 넣어 줍니다.',
 };
@@ -27,7 +27,13 @@ export function activate(api) {
 
   // ── 저장소: { [chatId]: { terms: [{ src, dst }], tones: [{ who, style }], reader: '' } } ──
   let books = {};
-  const ready = api.store.get('books', {}).then(v => { books = v && typeof v === 'object' ? v : {}; });
+  // 자동 스캔: every = 답변 몇 개마다 (0 = 끔) · seen = 채팅별로 마지막 스캔 뒤 받은 답변 수
+  let auto = { every: 0, seen: {} };
+  const ready = Promise.all([
+    api.store.get('books', {}).then(v => { books = v && typeof v === 'object' ? v : {}; }),
+    api.store.get('auto', null).then(v => { if (v && typeof v === 'object') auto = { every: +v.every || 0, seen: v.seen || {} }; }),
+  ]);
+  const saveAuto = () => api.store.set('auto', auto);
   const bookOf = id => (books[id] ||= { terms: [], tones: [], reader: '' });
   const isEmpty = b => !b || (!b.terms?.length && !b.tones?.length && !String(b.reader || '').trim());
   const save = () => {
@@ -98,6 +104,24 @@ export function activate(api) {
   api.on('chat:open', chat => ready.then(() => sync(chat || null)));
   api.on('settings', () => ready.then(() => sync()));   // 프리셋을 고쳐 저장했을 때 구간을 다시 넣는다
   api.on('ready', () => ready.then(() => sync()));
+
+  // 답변이 올 때마다 세다가, 정한 수가 차면 보조 연결로 조용히 스캔해 새 용어 · 말투만 더한다
+  const scanning = new Set();
+  api.on('message:received', d => ready.then(async () => {
+    const chat = d?.chat || api.chat.current().chat;
+    if (!auto.every || !chat?.id || scanning.has(chat.id)) return;
+    auto.seen[chat.id] = (auto.seen[chat.id] || 0) + 1;
+    if (auto.seen[chat.id] < auto.every) return saveAuto();
+    auto.seen[chat.id] = 0; await saveAuto();
+    scanning.add(chat.id);
+    try {
+      const msgs = api.chat.current().chat?.id === chat.id ? api.chat.current().msgs : [];
+      if (!msgs.length) return;
+      const [nt, ns] = await suggest(chat, msgs);
+      if (nt || ns) toast(`이야기 통역사: 용어 ${nt}개 · 말투 ${ns}개를 자동으로 더했어요`, 'ok');
+    } catch (e) { console.warn('[이야기 통역사] 자동 스캔 실패', e); }
+    finally { scanning.delete(chat.id); }
+  }));
   ready.then(() => sync());
 
   // ── AI로 용어 · 말투 채우기 ──
@@ -218,6 +242,11 @@ ${recent || '(none)'}
       h('div.ipl-sec', h('b', '독자 지시문'),
         h('textarea.inp', { value: b.reader || '', rows: 3, placeholder: '예: 대사는 구어체로, 지문은 문어체로. 효과음은 살린다.', oninput: e => { b.reader = e.target.value; touch(); } })),
       h('div.ipl-tools', ai, pick, clear),
+      h('div.ipl-sec', h('b', '자동 스캔 (모든 채팅 공통)'),
+        h('select.inp', { onchange: async e => { auto.every = +e.target.value || 0; await saveAuto(); toast(auto.every ? `답변 ${auto.every}개마다 자동으로 스캔해요` : '자동 스캔을 껐어요'); } },
+          [[0, '끄기'], [5, '답변 5개마다'], [10, '답변 10개마다'], [20, '답변 20개마다'], [40, '답변 40개마다']]
+            .map(([v, l]) => h('option', { value: String(v), selected: auto.every === v }, l))),
+        h('div.ipl-hint', '기능 › 보조 연결의 "번역" 연결로 최근 대화를 읽고, 새 용어와 말투만 더해요. 이미 적어 둔 건 고치지 않아요. 보조 연결을 비워 두면 대화에 쓰는 연결을 써요.')),
       h('details', h('summary', '번역 지시문에 들어가는 내용 보기'),
         h('pre.ipl-pre', blockFor(chat).replace(OPEN + '\n', '').replace('\n' + CLOSE, '').trim() || '(아직 아무것도 들어가지 않아요)')),
     ];
