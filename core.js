@@ -13,7 +13,7 @@
 export const manifest = {
   id: 'dl-interpres-lite',
   name: '이야기 통역사 라이트',
-  version: '0.3.0',
+  version: '0.3.1',
   author: 'romantic-lamb',
   description: '채팅마다 고유명사 번역 · 캐릭터 말투 · 독자 지시문을 고정해, 기본 번역 지시문에 자동으로 넣어 줍니다.',
 };
@@ -37,7 +37,7 @@ export function activate(api) {
   const saveAuto = () => api.store.set('auto', auto);
 
   // ── 채팅별 번역 설정 ──
-  // chats: { [chatId]: { mode: ''|'none'|'responses'|'inputs'|'both', lang: '', preset: '' } } — 빈 칸은 기본 설정을 따른다
+  // chats: { [chatId]: { mode: ''|'none'|'responses'|'inputs'|'both', lang: '', inputLang: '', preset: '' } } — 빈 칸은 기본 설정을 따른다
   // base: 사용자의 기본(앱) 번역 설정 · applied: 이 확장이 마지막으로 앱 설정에 넣은 값 (둘을 비교해 사용자가 바꾼 칸을 알아낸다)
   let tcfg = { chats: {}, base: null, applied: null };
   const tready = api.store.get('trcfg', null).then(v => { if (v && typeof v === 'object') tcfg = { chats: v.chats || {}, base: v.base || null, applied: v.applied || null }; });
@@ -110,7 +110,7 @@ export function activate(api) {
   }
 
   const TR_KEYS = ['auto', 'autoInput', 'lang', 'inputLang', 'preset'];
-  function hasOv(o) { return !!o && !!(o.mode || o.lang || o.preset); }
+  function hasOv(o) { return !!o && !!(o.mode || o.lang || o.inputLang || o.preset); }
   const pickTr = tr => Object.fromEntries(TR_KEYS.map(k => [k, tr?.[k] ?? null]));
   const sameTr = (a, b) => !!a && !!b && TR_KEYS.every(k => (a[k] ?? null) === (b[k] ?? null));
   function setTr(tr, target) {
@@ -129,6 +129,7 @@ export function activate(api) {
     if (hasOv(o)) {
       if (o.mode) { target.auto = o.mode === 'responses' || o.mode === 'both'; target.autoInput = o.mode === 'inputs' || o.mode === 'both'; }
       if (o.lang) target.lang = o.lang;
+      if (o.inputLang) target.inputLang = o.inputLang;
       if (o.preset && (tr.presets || []).some(p => p.id === o.preset)) target.preset = o.preset;
     }
     tcfg.applied = hasOv(o) ? target : null;
@@ -268,18 +269,21 @@ ${recent || '(none)'}
     const sel = (k, opts, cur) => h('select.inp', { onchange: e => void set(k, e.target.value) },
       opts.map(([v, l]) => h('option', { value: v, selected: (cur || '') === v }, l)));
 
-    const langOpts = [['', `기본 설정 따르기 (${langText(base.lang)})`], ...LANG_OPTS];
-    if (o.lang && !LANG_OPTS.some(([k]) => k === o.lang)) langOpts.push([o.lang, o.lang]);
-    langOpts.push(['\u0001', '직접 입력…']);
-    const langSel = h('select.inp', { onchange: async e => {
-      let v = e.target.value;
-      if (v === '\u0001') { const typed = await api.prompt('번역할 언어 이름 (예: Spanish, 스페인어)', o.lang || ''); if (typed === null) return redraw(); v = typed.trim(); }
-      await set('lang', v);
-    } }, langOpts.map(([v, l]) => h('option', { value: v, selected: (o.lang || '') === v }, l)));
+    const langSel = (k, fallback, title) => {
+      const opts = [['', `기본 설정 따르기 (${langText(base[k] || fallback)})`], ...LANG_OPTS];
+      if (o[k] && !LANG_OPTS.some(([v]) => v === o[k])) opts.push([o[k], o[k]]);
+      opts.push(['\u0001', '직접 입력…']);
+      return h('select.inp', { onchange: async e => {
+        let v = e.target.value;
+        if (v === '\u0001') { const typed = await api.prompt(title, o[k] || ''); if (typed === null) return redraw(); v = typed.trim(); }
+        await set(k, v);
+      } }, opts.map(([v, l]) => h('option', { value: v, selected: (o[k] || '') === v }, l)));
+    };
 
     return h('div.ipl-sec', h('b', '이 채팅의 번역'),
       h('div.ipl-field', h('span', '자동 번역'), sel('mode', [['', `기본 설정 따르기 (${MODE_OPTS.find(([k]) => k === modeOf(base))[1]})`], ...MODE_OPTS], o.mode)),
-      h('div.ipl-field', h('span', '답변을 옮길 언어'), langSel),
+      h('div.ipl-field', h('span', '답변을 옮길 언어'), langSel('lang', 'Korean', '답변을 옮길 언어 이름 (예: Spanish, 스페인어)')),
+      h('div.ipl-field', h('span', '내 글을 옮길 언어'), langSel('inputLang', 'English', '내 글을 옮길 언어 이름 (예: Japanese, 일본어)')),
       h('div.ipl-field', h('span', '번역 지시문'), sel('preset', [['', `기본 설정 따르기 (${presetText(base.preset)})`], ...presets.map(p => [p.id, p.name || p.id])], o.preset)),
       h('div.ipl-hint', '이 채팅을 열면 이 설정으로 바뀌고, 따로 정하지 않은 채팅을 열면 번역 화면의 기본 설정으로 돌아가요. 자동 번역을 꺼도 메시지의 지구본 단추로는 번역할 수 있어요.'));
   }
