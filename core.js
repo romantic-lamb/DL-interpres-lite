@@ -13,7 +13,7 @@
 export const manifest = {
   id: 'dl-interpres-lite',
   name: '이야기 통역사 라이트',
-  version: '0.2.1',
+  version: '0.3.0',
   author: 'romantic-lamb',
   description: '채팅마다 고유명사 번역 · 캐릭터 말투 · 독자 지시문을 고정해, 기본 번역 지시문에 자동으로 넣어 줍니다.',
 };
@@ -35,6 +35,16 @@ export function activate(api) {
     api.store.get('auto', null).then(v => { if (v && typeof v === 'object') auto = { every: +v.every || 0, seen: v.seen || {} }; }),
   ]);
   const saveAuto = () => api.store.set('auto', auto);
+
+  // ── 채팅별 번역 설정 ──
+  // chats: { [chatId]: { mode: ''|'none'|'responses'|'inputs'|'both', lang: '', preset: '' } } — 빈 칸은 기본 설정을 따른다
+  // base: 사용자의 기본(앱) 번역 설정 · applied: 이 확장이 마지막으로 앱 설정에 넣은 값 (둘을 비교해 사용자가 바꾼 칸을 알아낸다)
+  let tcfg = { chats: {}, base: null, applied: null };
+  const tready = api.store.get('trcfg', null).then(v => { if (v && typeof v === 'object') tcfg = { chats: v.chats || {}, base: v.base || null, applied: v.applied || null }; });
+  const saveT = () => {
+    for (const k of Object.keys(tcfg.chats)) if (!hasOv(tcfg.chats[k])) delete tcfg.chats[k];
+    return api.store.set('trcfg', tcfg);
+  };
   const bookOf = id => (books[id] ||= { terms: [], tones: [], reader: '' });
   const isEmpty = b => !b || (!b.terms?.length && !b.tones?.length && !String(b.reader || '').trim());
   const save = () => {
@@ -99,10 +109,47 @@ export function activate(api) {
     if (changed) S.set({ translate: tr });   // 깨끗한 상태로 저장
   }
 
+  const TR_KEYS = ['auto', 'autoInput', 'lang', 'inputLang', 'preset'];
+  function hasOv(o) { return !!o && !!(o.mode || o.lang || o.preset); }
+  const pickTr = tr => Object.fromEntries(TR_KEYS.map(k => [k, tr?.[k] ?? null]));
+  const sameTr = (a, b) => !!a && !!b && TR_KEYS.every(k => (a[k] ?? null) === (b[k] ?? null));
+  function setTr(tr, target) {
+    for (const k of TR_KEYS) { if (target[k] === null || target[k] === undefined) delete tr[k]; else tr[k] = target[k]; }
+    S.set({ translate: tr });   // 저장하고, 번역 단추 · 빠른 번역 표시도 새로 그리게 한다
+  }
+  /** 채팅을 열 때: 그 채팅에 따로 정한 번역 설정이 있으면 앱 번역 설정에 입히고, 없으면 기본 설정으로 돌려 놓는다 */
+  function applyTr(chat) {
+    if (stopped) return;
+    const tr = S.settings?.translate; if (!tr) return;
+    const cur = pickTr(tr);
+    // 지난번에 넣은 값과 달라진 칸은 사용자가 (번역 화면 · 차림 등으로) 바꾼 것 → 기본 설정으로 삼는다
+    if (!tcfg.applied || !tcfg.base) tcfg.base = cur;
+    else for (const k of TR_KEYS) if ((cur[k] ?? null) !== (tcfg.applied[k] ?? null)) tcfg.base[k] = cur[k];
+    const o = chat && tcfg.chats[chat.id], target = { ...tcfg.base };
+    if (hasOv(o)) {
+      if (o.mode) { target.auto = o.mode === 'responses' || o.mode === 'both'; target.autoInput = o.mode === 'inputs' || o.mode === 'both'; }
+      if (o.lang) target.lang = o.lang;
+      if (o.preset && (tr.presets || []).some(p => p.id === o.preset)) target.preset = o.preset;
+    }
+    tcfg.applied = hasOv(o) ? target : null;
+    if (!sameTr(cur, target)) setTr(tr, target);
+    saveT();
+  }
+  function restoreTr() {
+    const tr = S.settings?.translate;
+    if (!tr || !tcfg.applied || !tcfg.base) return;
+    const cur = pickTr(tr), target = { ...tcfg.base };
+    for (const k of TR_KEYS) if ((cur[k] ?? null) !== (tcfg.applied[k] ?? null)) target[k] = cur[k];   // 그 사이 사용자가 바꾼 칸은 살린다
+    tcfg.applied = null;
+    if (!sameTr(cur, target)) setTr(tr, target);
+    saveT();
+  }
+
   let timer = 0;
   const touch = () => { clearTimeout(timer); timer = setTimeout(() => { save(); sync(); }, 400); };
 
-  api.on('chat:open', chat => ready.then(() => sync(chat || null)));
+  api.on('chat:open', chat => ready.then(() => tready).then(() => { applyTr(chat || null); sync(chat || null); }));
+  Promise.all([ready, tready]).then(() => applyTr(api.chat.current().chat));
   api.on('settings', () => ready.then(() => sync()));   // 프리셋을 고쳐 저장했을 때 구간을 다시 넣는다
   api.on('ready', () => ready.then(() => sync()));
 
@@ -195,8 +242,47 @@ ${recent || '(none)'}
     .ipl-row textarea.inp { min-height: 40px; }
     .ipl-tools { display: flex; flex-wrap: wrap; gap: 6px; }
     .ipl-pre { white-space: pre-wrap; font-size: .78em; line-height: 1.5; background: var(--surface2); padding: 8px 10px; border-radius: var(--r-xs); max-height: 260px; overflow: auto; margin: 6px 0 0; }
+    .ipl-field { display: flex; align-items: center; gap: 8px; }
+    .ipl-field > span { flex: 0 0 34%; font-size: .86em; }
+    .ipl-field .inp { flex: 1 1 0; min-width: 0; }
     .ipl details summary { cursor: pointer; font-size: .84em; color: var(--dim); }
   `);
+
+  // ── 이 채팅의 번역 (자동 번역 · 언어 · 지시문 프리셋) ──
+  const LANG_OPTS = [['Korean', '한국어'], ['English', '영어'], ['Japanese', '일본어'], ['Chinese (Simplified)', '중국어 (간체)'], ['Chinese (Traditional)', '중국어 (번체)']];
+  const MODE_OPTS = [['none', '끄기'], ['responses', '답변만'], ['inputs', '내 입력만'], ['both', '답변과 입력']];
+  const modeOf = c => c?.auto && c?.autoInput ? 'both' : c?.auto ? 'responses' : c?.autoInput ? 'inputs' : 'none';
+  const langText = v => (LANG_OPTS.find(([k]) => k.toLowerCase() === String(v || '').toLowerCase()) || [, v || '한국어'])[1];
+
+  function trSection(chat, redraw) {
+    const o = tcfg.chats[chat.id] || {};
+    const base = tcfg.base || pickTr(S.settings?.translate);
+    const presets = S.settings?.translate?.presets || [];
+    const presetText = id => presets.find(p => p.id === id)?.name || '기본';
+    const set = async (k, v) => {
+      const next = { ...(tcfg.chats[chat.id] || {}), [k]: v };
+      tcfg.chats[chat.id] = next;
+      if (api.chat.current().chat?.id === chat.id) applyTr(chat); else await saveT();
+      redraw();
+    };
+    const sel = (k, opts, cur) => h('select.inp', { onchange: e => void set(k, e.target.value) },
+      opts.map(([v, l]) => h('option', { value: v, selected: (cur || '') === v }, l)));
+
+    const langOpts = [['', `기본 설정 따르기 (${langText(base.lang)})`], ...LANG_OPTS];
+    if (o.lang && !LANG_OPTS.some(([k]) => k === o.lang)) langOpts.push([o.lang, o.lang]);
+    langOpts.push(['\u0001', '직접 입력…']);
+    const langSel = h('select.inp', { onchange: async e => {
+      let v = e.target.value;
+      if (v === '\u0001') { const typed = await api.prompt('번역할 언어 이름 (예: Spanish, 스페인어)', o.lang || ''); if (typed === null) return redraw(); v = typed.trim(); }
+      await set('lang', v);
+    } }, langOpts.map(([v, l]) => h('option', { value: v, selected: (o.lang || '') === v }, l)));
+
+    return h('div.ipl-sec', h('b', '이 채팅의 번역'),
+      h('div.ipl-field', h('span', '자동 번역'), sel('mode', [['', `기본 설정 따르기 (${MODE_OPTS.find(([k]) => k === modeOf(base))[1]})`], ...MODE_OPTS], o.mode)),
+      h('div.ipl-field', h('span', '답변을 옮길 언어'), langSel),
+      h('div.ipl-field', h('span', '번역 지시문'), sel('preset', [['', `기본 설정 따르기 (${presetText(base.preset)})`], ...presets.map(p => [p.id, p.name || p.id])], o.preset)),
+      h('div.ipl-hint', '이 채팅을 열면 이 설정으로 바뀌고, 따로 정하지 않은 채팅을 열면 번역 화면의 기본 설정으로 돌아가요. 자동 번역을 꺼도 메시지의 지구본 단추로는 번역할 수 있어요.'));
+  }
 
   function view(chat, msgs, redraw) {
     const b = bookOf(chat.id);
@@ -232,6 +318,7 @@ ${recent || '(none)'}
     } });
 
     return [
+      trSection(chat, redraw),
       h('div.ipl-sec', h('b', '용어집'),
         h('div.ipl-hint', '고유명사를 늘 같은 말로 옮겨요. 입력 번역(한→영)에서는 거꾸로 써요.'),
         b.terms.map(termRow),
@@ -276,6 +363,7 @@ ${recent || '(none)'}
     stopped = true;
     clearTimeout(timer);
     save();
+    restoreTr();
     unsync();
   };
 }
